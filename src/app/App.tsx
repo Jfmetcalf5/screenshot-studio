@@ -1,8 +1,21 @@
-import { useState, useRef, useEffect } from 'react';
-import { Download, Plus, Trash2, Upload, Settings2, X, ArrowUpRight, Circle, Square, Minus, Paintbrush } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import {
+  Download, Plus, Trash2, Upload, Settings2, ArrowUpRight, Circle, Square, Minus, Paintbrush,
+  Smartphone, Tablet, Copy, Save, Image, Type, Palette, RotateCcw, RotateCw,
+  GripVertical, ChevronDown, FileArchive, Layers, Menu, X
+} from 'lucide-react';
 import * as htmlToImage from 'html-to-image';
+import JSZip from 'jszip';
+import { DndProvider, useDrag, useDrop } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
+
+// ==================== TYPES ====================
 
 type AnnotationType = 'arrow' | 'line' | 'circle' | 'rectangle' | 'highlight';
+type DeviceType = 'iphone-16-pro-max' | 'iphone-16' | 'iphone-se' | 'ipad-pro' | 'android-pixel' | 'android-samsung';
+type DeviceColor = 'black' | 'white' | 'gold' | 'silver' | 'blue' | 'purple';
+type TextAlign = 'left' | 'center' | 'right';
+type FontWeight = '400' | '500' | '600' | '700' | '800' | '900';
 
 interface Annotation {
   id: string;
@@ -27,945 +40,622 @@ interface Screenshot {
   bgColor1: string;
   bgColor2: string;
   bgColor3: string;
+  bgImage?: string;
+  bgPattern?: string;
   gradientHeight?: number;
   phoneTopOffset?: number;
   textTopOffset?: number;
+  textHorizontalOffset?: number;
   annotations: Annotation[];
+  deviceType: DeviceType;
+  deviceColor: DeviceColor;
+  showDeviceFrame: boolean;
+  fontFamily: string;
+  titleFontSize: number;
+  subtitleFontSize: number;
+  textAlign: TextAlign;
+  titleFontWeight: FontWeight;
+  subtitleFontWeight: FontWeight;
+  textShadow: boolean;
 }
+
+interface Template {
+  id: string;
+  name: string;
+  screenshot: Omit<Screenshot, 'id' | 'image'>;
+}
+
+// ==================== CONSTANTS ====================
+
+const DEVICE_CONFIGS: Record<DeviceType, { name: string; width: number; height: number; screenWidth: number; screenHeight: number; borderRadius: number }> = {
+  'iphone-16-pro-max': { name: 'iPhone 16 Pro Max', width: 1290, height: 2796, screenWidth: 1100, screenHeight: 2400, borderRadius: 55 },
+  'iphone-16': { name: 'iPhone 16', width: 1179, height: 2556, screenWidth: 1000, screenHeight: 2200, borderRadius: 50 },
+  'iphone-se': { name: 'iPhone SE', width: 750, height: 1334, screenWidth: 650, screenHeight: 1150, borderRadius: 0 },
+  'ipad-pro': { name: 'iPad Pro 12.9"', width: 2048, height: 2732, screenWidth: 1800, screenHeight: 2400, borderRadius: 40 },
+  'android-pixel': { name: 'Pixel 8 Pro', width: 1344, height: 2992, screenWidth: 1150, screenHeight: 2600, borderRadius: 45 },
+  'android-samsung': { name: 'Galaxy S24', width: 1440, height: 3120, screenWidth: 1250, screenHeight: 2750, borderRadius: 50 },
+};
+
+const DEVICE_COLORS: Record<DeviceColor, { name: string; gradient: string }> = {
+  'black': { name: 'Black', gradient: 'linear-gradient(145deg, #1a1a1a 0%, #0a0a0a 100%)' },
+  'white': { name: 'White', gradient: 'linear-gradient(145deg, #f5f5f5 0%, #e0e0e0 100%)' },
+  'gold': { name: 'Gold', gradient: 'linear-gradient(145deg, #d4af37 0%, #b8962e 100%)' },
+  'silver': { name: 'Silver', gradient: 'linear-gradient(145deg, #c0c0c0 0%, #a8a8a8 100%)' },
+  'blue': { name: 'Blue', gradient: 'linear-gradient(145deg, #4a6fa5 0%, #3d5a80 100%)' },
+  'purple': { name: 'Purple', gradient: 'linear-gradient(145deg, #7b68ee 0%, #6a5acd 100%)' },
+};
+
+const FONT_FAMILIES = [
+  { value: 'system-ui, sans-serif', name: 'System' },
+  { value: 'Georgia, serif', name: 'Georgia' },
+  { value: 'Arial, sans-serif', name: 'Arial' },
+  { value: '"Helvetica Neue", sans-serif', name: 'Helvetica' },
+  { value: 'Verdana, sans-serif', name: 'Verdana' },
+];
+
+const PRESET_THEMES = [
+  { name: 'Amber', bgColor1: '#fef3c7', bgColor2: '#fefce8', bgColor3: '#fed7aa', titleColor: '#78350f', subtitleColor: '#92400e' },
+  { name: 'Ocean', bgColor1: '#dbeafe', bgColor2: '#eff6ff', bgColor3: '#bfdbfe', titleColor: '#1e3a5f', subtitleColor: '#1e40af' },
+  { name: 'Forest', bgColor1: '#d1fae5', bgColor2: '#ecfdf5', bgColor3: '#a7f3d0', titleColor: '#064e3b', subtitleColor: '#047857' },
+  { name: 'Purple', bgColor1: '#ede9fe', bgColor2: '#f5f3ff', bgColor3: '#ddd6fe', titleColor: '#4c1d95', subtitleColor: '#6d28d9' },
+  { name: 'Rose', bgColor1: '#fce7f3', bgColor2: '#fdf2f8', bgColor3: '#fbcfe8', titleColor: '#831843', subtitleColor: '#be185d' },
+  { name: 'Dark', bgColor1: '#334155', bgColor2: '#1e293b', bgColor3: '#475569', titleColor: '#f1f5f9', subtitleColor: '#cbd5e1' },
+  { name: 'White', bgColor1: '#ffffff', bgColor2: '#fafafa', bgColor3: '#f5f5f5', titleColor: '#171717', subtitleColor: '#525252' },
+  { name: 'Night', bgColor1: '#0f172a', bgColor2: '#1e293b', bgColor3: '#334155', titleColor: '#f8fafc', subtitleColor: '#94a3b8' },
+];
+
+const DEFAULT_SCREENSHOT: Omit<Screenshot, 'id'> = {
+  image: '',
+  title: 'Feature Title',
+  subtitle: 'Description here',
+  titleColor: '#78350f',
+  subtitleColor: '#92400e',
+  bgColor1: '#fef3c7',
+  bgColor2: '#fefce8',
+  bgColor3: '#fed7aa',
+  bgImage: '',
+  bgPattern: '',
+  gradientHeight: 400,
+  phoneTopOffset: 0,
+  textTopOffset: 0,
+  textHorizontalOffset: 0,
+  annotations: [],
+  deviceType: 'iphone-16-pro-max',
+  deviceColor: 'black',
+  showDeviceFrame: true,
+  fontFamily: 'system-ui, sans-serif',
+  titleFontSize: 96,
+  subtitleFontSize: 56,
+  textAlign: 'center',
+  titleFontWeight: '700',
+  subtitleFontWeight: '400',
+  textShadow: false,
+};
+
+const BUILT_IN_TEMPLATES: Template[] = [
+  { id: 'minimal', name: 'Minimal', screenshot: { ...DEFAULT_SCREENSHOT, showDeviceFrame: false, bgColor1: '#ffffff', bgColor2: '#fafafa', bgColor3: '#f5f5f5', titleColor: '#171717', subtitleColor: '#525252' } },
+  { id: 'dark', name: 'Dark', screenshot: { ...DEFAULT_SCREENSHOT, bgColor1: '#0f172a', bgColor2: '#1e293b', bgColor3: '#334155', titleColor: '#f8fafc', subtitleColor: '#94a3b8' } },
+  { id: 'vibrant', name: 'Vibrant', screenshot: { ...DEFAULT_SCREENSHOT, bgColor1: '#ec4899', bgColor2: '#8b5cf6', bgColor3: '#3b82f6', titleColor: '#ffffff', subtitleColor: '#fce7f3', textShadow: true } },
+];
+
+const getPatternStyle = (pattern: string, color: string): string => {
+  const patternColor = color + '20';
+  switch (pattern) {
+    case 'dots': return `radial-gradient(circle, ${patternColor} 1px, transparent 1px)`;
+    case 'grid': return `linear-gradient(${patternColor} 1px, transparent 1px), linear-gradient(90deg, ${patternColor} 1px, transparent 1px)`;
+    default: return '';
+  }
+};
+
+// ==================== MAIN APP ====================
 
 export default function App() {
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [history, setHistory] = useState<Screenshot[][]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [showMenu, setShowMenu] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'png' | 'jpeg'>('png');
 
-  const addScreenshot = () => {
-    const newScreenshot: Screenshot = {
-      id: Date.now().toString(),
-      image: '',
-      title: 'New Feature Title',
-      subtitle: 'Feature description goes here',
-      titleColor: '#78350f',
-      subtitleColor: '#92400e',
-      bgColor1: '#fef3c7',
-      bgColor2: '#fefce8',
-      bgColor3: '#fed7aa',
-      gradientHeight: 400,
-      phoneTopOffset: 0,
-      textTopOffset: 0,
-      annotations: [],
+  useEffect(() => {
+    const saved = localStorage.getItem('screenshot-studio-data');
+    const savedTemplates = localStorage.getItem('screenshot-studio-templates');
+    if (saved) try { setScreenshots(JSON.parse(saved)); } catch {}
+    if (savedTemplates) try { setTemplates(JSON.parse(savedTemplates)); } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (screenshots.length > 0) localStorage.setItem('screenshot-studio-data', JSON.stringify(screenshots));
+  }, [screenshots]);
+
+  useEffect(() => {
+    if (templates.length > 0) localStorage.setItem('screenshot-studio-templates', JSON.stringify(templates));
+  }, [templates]);
+
+  const pushHistory = useCallback((newScreenshots: Screenshot[]) => {
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newScreenshots);
+    if (newHistory.length > 30) newHistory.shift();
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+  }, [history, historyIndex]);
+
+  const undo = useCallback(() => {
+    if (historyIndex > 0) { setHistoryIndex(historyIndex - 1); setScreenshots(history[historyIndex - 1]); }
+  }, [history, historyIndex]);
+
+  const redo = useCallback(() => {
+    if (historyIndex < history.length - 1) { setHistoryIndex(historyIndex + 1); setScreenshots(history[historyIndex + 1]); }
+  }, [history, historyIndex]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+        e.preventDefault();
+        e.shiftKey ? redo() : undo();
+      }
     };
-    setScreenshots([...screenshots, newScreenshot]);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undo, redo]);
+
+  const addScreenshot = (template?: Template) => {
+    const base = template ? { ...template.screenshot } : { ...DEFAULT_SCREENSHOT };
+    const newScreenshot: Screenshot = { ...base, id: Date.now().toString(), image: '' };
+    const newScreenshots = [...screenshots, newScreenshot];
+    setScreenshots(newScreenshots);
+    pushHistory(newScreenshots);
+    setShowMenu(false);
+  };
+
+  const duplicateScreenshot = (s: Screenshot) => {
+    const idx = screenshots.findIndex(x => x.id === s.id);
+    const newScreenshots = [...screenshots];
+    newScreenshots.splice(idx + 1, 0, { ...s, id: Date.now().toString() });
+    setScreenshots(newScreenshots);
+    pushHistory(newScreenshots);
   };
 
   const removeScreenshot = (id: string) => {
-    setScreenshots(screenshots.filter((s) => s.id !== id));
+    const newScreenshots = screenshots.filter(s => s.id !== id);
+    setScreenshots(newScreenshots);
+    pushHistory(newScreenshots);
+    if (newScreenshots.length === 0) localStorage.removeItem('screenshot-studio-data');
   };
 
   const updateScreenshot = (id: string, updates: Partial<Screenshot>) => {
-    setScreenshots(screenshots.map((s) => (s.id === id ? { ...s, ...updates } : s)));
+    const newScreenshots = screenshots.map(s => s.id === id ? { ...s, ...updates } : s);
+    setScreenshots(newScreenshots);
+    pushHistory(newScreenshots);
   };
 
-  const downloadScreenshot = async (screenshotRef: HTMLDivElement | null, title: string) => {
-    if (!screenshotRef) return;
+  const moveScreenshot = (dragIndex: number, hoverIndex: number) => {
+    const newScreenshots = [...screenshots];
+    const [dragged] = newScreenshots.splice(dragIndex, 1);
+    newScreenshots.splice(hoverIndex, 0, dragged);
+    setScreenshots(newScreenshots);
+    pushHistory(newScreenshots);
+  };
 
+  const saveAsTemplate = (s: Screenshot, name: string) => {
+    const { id, image, ...rest } = s;
+    setTemplates([...templates, { id: Date.now().toString(), name, screenshot: rest }]);
+  };
+
+  const downloadScreenshot = async (ref: HTMLDivElement | null, title: string, config: typeof DEVICE_CONFIGS[DeviceType]) => {
+    if (!ref) return null;
     try {
-      const dataUrl = await htmlToImage.toPng(screenshotRef, {
-        quality: 1,
-        pixelRatio: 1,
-        width: 1290,
-        height: 2796,
-      });
+      const dataUrl = exportFormat === 'jpeg'
+        ? await htmlToImage.toJpeg(ref, { quality: 0.92, pixelRatio: 1, width: config.width, height: config.height })
+        : await htmlToImage.toPng(ref, { quality: 1, pixelRatio: 1, width: config.width, height: config.height });
+      return { dataUrl, filename: `${title.toLowerCase().replace(/\s+/g, '-')}.${exportFormat}` };
+    } catch { return null; }
+  };
 
+  const downloadSingle = async (ref: HTMLDivElement | null, title: string, config: typeof DEVICE_CONFIGS[DeviceType]) => {
+    const result = await downloadScreenshot(ref, title, config);
+    if (result) {
       const link = document.createElement('a');
-      link.download = `${title.toLowerCase().replace(/\s+/g, '-')}.png`;
-      link.href = dataUrl;
+      link.download = result.filename;
+      link.href = result.dataUrl;
       link.click();
-    } catch (err) {
-      console.error('Error generating screenshot:', err);
     }
   };
 
   const downloadAll = async () => {
+    const zip = new JSZip();
     for (let i = 0; i < screenshots.length; i++) {
-      const screenshot = screenshots[i];
-      const element = document.getElementById(`screenshot-${screenshot.id}`);
-      if (element) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-        await downloadScreenshot(element as HTMLDivElement, `${i + 1}-${screenshot.title}`);
+      const s = screenshots[i];
+      const el = document.getElementById(`screenshot-${s.id}`);
+      if (el) {
+        await new Promise(r => setTimeout(r, 200));
+        const result = await downloadScreenshot(el as HTMLDivElement, `${i + 1}-${s.title}`, DEVICE_CONFIGS[s.deviceType]);
+        if (result) zip.file(result.filename, result.dataUrl.split(',')[1], { base64: true });
       }
     }
+    const content = await zip.generateAsync({ type: 'blob' });
+    const link = document.createElement('a');
+    link.download = 'screenshots.zip';
+    link.href = URL.createObjectURL(content);
+    link.click();
   };
 
   return (
-    <div className="min-h-screen bg-neutral-950 py-8 px-6">
-      <div className="max-w-[1800px] mx-auto">
-        {/* Header */}
-        <div className="mb-12 flex items-start justify-between">
-          <div>
-            <h1 className="text-amber-50 mb-3 tracking-tight" style={{ fontSize: '42px', fontFamily: 'Georgia, serif' }}>
-              Screenshot Studio
-            </h1>
-            <p className="text-amber-100/60 text-lg" style={{ fontFamily: 'system-ui, sans-serif' }}>
-              Craft professional App Store screenshots with precision
-            </p>
+    <DndProvider backend={HTML5Backend}>
+      <div className="min-h-screen bg-slate-950 p-3 sm:p-6">
+        <div className="max-w-7xl mx-auto">
+          {/* Header */}
+          <div className="mb-4 sm:mb-6 flex items-center justify-between gap-2">
+            <h1 className="text-slate-100 text-xl sm:text-2xl font-medium tracking-tight">Screenshot Studio</h1>
+
+            <div className="flex items-center gap-2">
+              <button onClick={undo} disabled={historyIndex <= 0} className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300 rounded-lg transition-colors"><RotateCcw className="w-4 h-4" /></button>
+              <button onClick={redo} disabled={historyIndex >= history.length - 1} className="p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300 rounded-lg transition-colors"><RotateCw className="w-4 h-4" /></button>
+
+              <button onClick={downloadAll} disabled={screenshots.length === 0} className="hidden sm:flex p-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-slate-300 rounded-lg transition-colors"><FileArchive className="w-4 h-4" /></button>
+
+              <div className="relative">
+                <button onClick={() => setShowMenu(!showMenu)} className="p-2 bg-slate-100 hover:bg-white text-slate-900 rounded-lg transition-colors"><Plus className="w-4 h-4" /></button>
+
+                {showMenu && (
+                  <div className="absolute right-0 top-full mt-2 w-64 bg-slate-900 rounded-xl border border-slate-700 p-3 z-50 shadow-xl">
+                    <div className="flex justify-between items-center mb-3">
+                      <span className="text-slate-200 text-sm font-medium">New Screenshot</span>
+                      <button onClick={() => setShowMenu(false)} className="text-slate-400 hover:text-slate-200"><X className="w-4 h-4" /></button>
+                    </div>
+                    <button onClick={() => addScreenshot()} className="w-full p-3 mb-2 bg-slate-100 hover:bg-white text-slate-900 rounded-lg text-sm font-medium transition-colors">Blank Screenshot</button>
+                    <div className="text-xs text-slate-500 mb-2">Templates</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {BUILT_IN_TEMPLATES.map(t => (
+                        <button key={t.id} onClick={() => addScreenshot(t)} className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-left transition-colors">
+                          <div className="w-full h-8 rounded mb-1" style={{ background: `linear-gradient(135deg, ${t.screenshot.bgColor1} 0%, ${t.screenshot.bgColor3} 100%)` }} />
+                          <div className="text-xs text-slate-300">{t.name}</div>
+                        </button>
+                      ))}
+                      {templates.map(t => (
+                        <button key={t.id} onClick={() => addScreenshot(t)} className="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-left transition-colors">
+                          <div className="w-full h-8 rounded mb-1" style={{ background: `linear-gradient(135deg, ${t.screenshot.bgColor1} 0%, ${t.screenshot.bgColor3} 100%)` }} />
+                          <div className="text-xs text-slate-300 truncate">{t.name}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
-          <div className="flex gap-3">
-            <button
-              onClick={downloadAll}
-              className="px-6 py-3 bg-amber-600/10 hover:bg-amber-600/20 border border-amber-600/30 text-amber-200 rounded-lg transition-all duration-200 flex items-center gap-2"
-              style={{ fontFamily: 'system-ui, sans-serif' }}
-            >
-              <Download className="w-5 h-5" />
-              Download All
-            </button>
-            <button
-              onClick={addScreenshot}
-              className="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-amber-950 rounded-lg transition-all duration-200 flex items-center gap-2 font-medium"
-              style={{ fontFamily: 'system-ui, sans-serif' }}
-            >
-              <Plus className="w-5 h-5" />
-              Add Screenshot
-            </button>
+          {/* Screenshots */}
+          <div className="space-y-4">
+            {screenshots.map((screenshot, index) => (
+              <ScreenshotCard
+                key={screenshot.id}
+                screenshot={screenshot}
+                index={index}
+                onDownload={downloadSingle}
+                onRemove={removeScreenshot}
+                onUpdate={updateScreenshot}
+                onDuplicate={duplicateScreenshot}
+                onMove={moveScreenshot}
+                onSaveAsTemplate={saveAsTemplate}
+              />
+            ))}
           </div>
+
+          {screenshots.length === 0 && (
+            <div className="text-center py-20">
+              <div className="text-slate-500 text-lg mb-4">No screenshots yet</div>
+              <button onClick={() => addScreenshot()} className="px-6 py-3 bg-slate-100 hover:bg-white text-slate-900 rounded-lg font-medium inline-flex items-center gap-2 transition-colors">
+                <Plus className="w-5 h-5" /> Create Screenshot
+              </button>
+            </div>
+          )}
         </div>
-
-        {/* Screenshots Grid */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {screenshots.map((screenshot, index) => (
-            <ScreenshotCard
-              key={screenshot.id}
-              screenshot={screenshot}
-              index={index}
-              onDownload={downloadScreenshot}
-              onRemove={removeScreenshot}
-              onUpdate={updateScreenshot}
-            />
-          ))}
-        </div>
-
-        {screenshots.length === 0 && (
-          <div className="text-center py-32">
-            <div className="text-amber-100/30 text-xl mb-4">No screenshots yet</div>
-            <button
-              onClick={addScreenshot}
-              className="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-amber-950 rounded-lg transition-all duration-200 inline-flex items-center gap-2 font-medium"
-            >
-              <Plus className="w-5 h-5" />
-              Create Your First Screenshot
-            </button>
-          </div>
-        )}
       </div>
-    </div>
+    </DndProvider>
   );
 }
+
+// ==================== SCREENSHOT CARD ====================
 
 interface ScreenshotCardProps {
   screenshot: Screenshot;
   index: number;
-  onDownload: (ref: HTMLDivElement | null, title: string) => void;
+  onDownload: (ref: HTMLDivElement | null, title: string, config: typeof DEVICE_CONFIGS[DeviceType]) => void;
   onRemove: (id: string) => void;
   onUpdate: (id: string, updates: Partial<Screenshot>) => void;
+  onDuplicate: (s: Screenshot) => void;
+  onMove: (dragIndex: number, hoverIndex: number) => void;
+  onSaveAsTemplate: (s: Screenshot, name: string) => void;
 }
 
-function ScreenshotCard({ screenshot, index, onDownload, onRemove, onUpdate }: ScreenshotCardProps) {
+function ScreenshotCard({ screenshot, index, onDownload, onRemove, onUpdate, onDuplicate, onMove, onSaveAsTemplate }: ScreenshotCardProps) {
+  const ref = useRef<HTMLDivElement>(null);
   const screenshotRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showColors, setShowColors] = useState(false);
-  const [showAnnotations, setShowAnnotations] = useState(false);
-  const [selectedAnnotation, setSelectedAnnotation] = useState<string | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isResizing, setIsResizing] = useState(false);
-  const [isRotating, setIsRotating] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [activeTab, setActiveTab] = useState<'text' | 'style' | 'layout' | 'device'>('text');
+  const [showSaveTemplate, setShowSaveTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState('');
 
-  const addAnnotation = (type: AnnotationType) => {
-    const newAnnotation: Annotation = {
-      id: Date.now().toString(),
-      type,
-      enabled: true,
-      color: '#fb923c',
-      x: type === 'arrow' ? -110 : 500,
-      y: type === 'arrow' ? 280 : 600,
-      width: type === 'arrow' ? 900 : type === 'line' ? 400 : 200,
-      height: type === 'arrow' ? 300 : type === 'line' ? 4 : 200,
-      rotation: 0,
-      strokeWidth: type === 'highlight' ? 0 : 16,
-    };
-    onUpdate(screenshot.id, { annotations: [...screenshot.annotations, newAnnotation] });
-    setSelectedAnnotation(newAnnotation.id);
-  };
+  const deviceConfig = DEVICE_CONFIGS[screenshot.deviceType];
+  const previewWidth = typeof window !== 'undefined' && window.innerWidth < 640 ? 280 : 200;
+  const previewScale = previewWidth / deviceConfig.width;
+  const previewHeight = deviceConfig.height * previewScale;
 
-  const updateAnnotation = (annotationId: string, updates: Partial<Annotation>) => {
-    const updatedAnnotations = screenshot.annotations.map((a) =>
-      a.id === annotationId ? { ...a, ...updates } : a
-    );
-    onUpdate(screenshot.id, { annotations: updatedAnnotations });
-  };
+  const [{ isDragging }, drag, preview] = useDrag({
+    type: 'SCREENSHOT',
+    item: { index },
+    collect: (m) => ({ isDragging: m.isDragging() }),
+  });
 
-  const removeAnnotation = (annotationId: string) => {
-    onUpdate(screenshot.id, { annotations: screenshot.annotations.filter((a) => a.id !== annotationId) });
-    if (selectedAnnotation === annotationId) {
-      setSelectedAnnotation(null);
-    }
-  };
+  const [, drop] = useDrop({
+    accept: 'SCREENSHOT',
+    hover: (item: { index: number }) => {
+      if (item.index !== index) { onMove(item.index, index); item.index = index; }
+    },
+  });
 
-  const handleAnnotationMouseDown = (e: React.MouseEvent, annotationId: string, action: 'move' | 'resize' | 'rotate') => {
-    e.stopPropagation();
-    setSelectedAnnotation(annotationId);
-    const rect = e.currentTarget.getBoundingClientRect();
-    setDragStart({ x: e.clientX, y: e.clientY });
-
-    if (action === 'move') {
-      setIsDragging(true);
-    } else if (action === 'resize') {
-      setIsResizing(true);
-    } else if (action === 'rotate') {
-      setIsRotating(true);
-    }
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!selectedAnnotation) return;
-
-    const annotation = screenshot.annotations.find((a) => a.id === selectedAnnotation);
-    if (!annotation) return;
-
-    if (isDragging) {
-      const deltaX = (e.clientX - dragStart.x) * 4; // Scale factor for preview
-      const deltaY = (e.clientY - dragStart.y) * 4;
-      updateAnnotation(selectedAnnotation, {
-        x: annotation.x + deltaX,
-        y: annotation.y + deltaY,
-      });
-      setDragStart({ x: e.clientX, y: e.clientY });
-    } else if (isResizing) {
-      const deltaX = (e.clientX - dragStart.x) * 4;
-      const deltaY = (e.clientY - dragStart.y) * 4;
-      updateAnnotation(selectedAnnotation, {
-        width: Math.max(50, annotation.width! + deltaX),
-        height: Math.max(20, annotation.height! + deltaY),
-      });
-      setDragStart({ x: e.clientX, y: e.clientY });
-    } else if (isRotating) {
-      // Get the preview container to calculate relative position
-      const previewRect = e.currentTarget.getBoundingClientRect();
-      const mouseX = (e.clientX - previewRect.left) * 4; // Scale to actual size
-      const mouseY = (e.clientY - previewRect.top) * 4;
-
-      const centerX = annotation.x + (annotation.width || 0) / 2;
-      const centerY = annotation.y + (annotation.height || 0) / 2;
-
-      const angle = Math.atan2(mouseY - centerY, mouseX - centerX) * (180 / Math.PI);
-      updateAnnotation(selectedAnnotation, {
-        rotation: Math.round(angle + 90), // +90 to make top handle point up when at 0°
-      });
-    }
-  };
-
-  const handleMouseUp = () => {
-    setIsDragging(false);
-    setIsResizing(false);
-    setIsRotating(false);
-  };
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (selectedAnnotation && (e.key === 'Delete' || e.key === 'Backspace')) {
-        // Only delete if not focused on an input
-        if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
-          e.preventDefault();
-          removeAnnotation(selectedAnnotation);
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAnnotation]);
+  preview(drop(ref));
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        onUpdate(screenshot.id, { image: reader.result as string });
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const file = e.dataTransfer.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        onUpdate(screenshot.id, { image: reader.result as string });
-      };
+      reader.onloadend = () => onUpdate(screenshot.id, { image: reader.result as string });
       reader.readAsDataURL(file);
     }
   };
 
   return (
-    <div className="bg-neutral-900 rounded-xl border border-amber-600/10 overflow-hidden">
-      {/* Card Header */}
-      <div className="px-6 py-4 border-b border-amber-600/10 flex items-center justify-between bg-neutral-900/50">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-amber-600/20 text-amber-400 flex items-center justify-center text-sm font-medium">
-            {index + 1}
-          </div>
-          <h3 className="text-amber-50 font-medium" style={{ fontFamily: 'system-ui, sans-serif' }}>
-            {screenshot.title || 'Untitled Screenshot'}
-          </h3>
-        </div>
-        <button
-          onClick={() => onRemove(screenshot.id)}
-          className="p-2 hover:bg-red-500/10 text-red-400/70 hover:text-red-400 rounded-lg transition-colors"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
+    <div ref={ref} className={`bg-slate-900 rounded-xl border border-slate-800 overflow-hidden ${isDragging ? 'opacity-50' : ''}`}>
+      {/* Header */}
+      <div className="px-3 py-2 border-b border-slate-800 flex items-center gap-2 bg-slate-900/50">
+        <div ref={drag} className="cursor-grab p-1 hover:bg-slate-800 rounded transition-colors"><GripVertical className="w-4 h-4 text-slate-500" /></div>
+        <div className="w-6 h-6 rounded-full bg-slate-700 text-slate-300 flex items-center justify-center text-xs">{index + 1}</div>
+        <span className="text-slate-100 text-sm truncate flex-1">{screenshot.title || 'Untitled'}</span>
+        <button onClick={() => onDuplicate(screenshot)} className="p-1.5 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded transition-colors"><Copy className="w-3.5 h-3.5" /></button>
+        <button onClick={() => setShowSaveTemplate(!showSaveTemplate)} className="p-1.5 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded transition-colors"><Save className="w-3.5 h-3.5" /></button>
+        <button onClick={() => onRemove(screenshot.id)} className="p-1.5 hover:bg-red-500/10 text-slate-400 hover:text-red-400 rounded transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
       </div>
 
-      <div className="p-6">
-        <div className="grid grid-cols-[auto_1fr] gap-6">
+      {showSaveTemplate && (
+        <div className="px-3 py-2 bg-slate-800/50 border-b border-slate-800 flex gap-2">
+          <input value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="Template name" className="flex-1 px-2 py-1 bg-slate-950 border border-slate-700 rounded text-slate-100 text-sm" />
+          <button onClick={() => { if (templateName) { onSaveAsTemplate(screenshot, templateName); setTemplateName(''); setShowSaveTemplate(false); }}} className="px-3 py-1 bg-slate-100 text-slate-900 rounded text-sm font-medium">Save</button>
+        </div>
+      )}
+
+      <div className="p-3">
+        {/* Mobile: Stack vertically, Desktop: Side by side */}
+        <div className="flex flex-col sm:flex-row gap-4">
           {/* Preview */}
-          <div>
+          <div className="flex flex-col items-center sm:items-start">
             <div
-              className="mb-3 border border-amber-600/20 rounded-lg bg-neutral-950 relative"
-              style={{ width: '322px', height: '699px', overflow: 'hidden' }}
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}
+              className="border border-slate-800 rounded-lg bg-slate-950 relative overflow-hidden mb-2"
+              style={{ width: `${previewWidth}px`, height: `${previewHeight}px` }}
             >
-              <div
-                style={{ transform: 'scale(0.25)', transformOrigin: 'top left', width: '1290px', height: '2796px' }}
-                onClick={() => setSelectedAnnotation(null)}
-              >
+              <div style={{ transform: `scale(${previewScale})`, transformOrigin: 'top left', width: `${deviceConfig.width}px`, height: `${deviceConfig.height}px` }}>
                 <div
                   id={`screenshot-${screenshot.id}`}
                   ref={screenshotRef}
-                  className="relative p-12"
+                  className="relative"
                   style={{
-                    width: '1290px',
-                    height: '2796px',
-                    background: `linear-gradient(135deg, ${screenshot.bgColor1} 0%, ${screenshot.bgColor2} 50%, ${screenshot.bgColor3} 100%)`,
+                    width: `${deviceConfig.width}px`,
+                    height: `${deviceConfig.height}px`,
+                    background: screenshot.bgImage ? `url(${screenshot.bgImage}) center/cover` : `linear-gradient(135deg, ${screenshot.bgColor1} 0%, ${screenshot.bgColor2} 50%, ${screenshot.bgColor3} 100%)`,
+                    padding: '48px',
                   }}
                 >
-                  {/* Top Gradient Overlay */}
-                  <div
-                    className="absolute top-0 left-0 right-0 z-20 pointer-events-none"
-                    style={{
-                      height: `${(screenshot.gradientHeight || 400) + 200}px`,
-                      background: `linear-gradient(to bottom, ${screenshot.bgColor1} 0%, ${screenshot.bgColor1} ${((screenshot.gradientHeight || 400) / ((screenshot.gradientHeight || 400) + 200)) * 100}%, transparent 100%)`,
-                    }}
-                  />
-
-                  {/* Marketing Text */}
-                  <div
-                    className="text-center mb-16 relative z-30"
-                    style={{ marginTop: `${screenshot.textTopOffset || 0}px` }}
-                  >
-                    <h2
-                      className="text-8xl mb-4 font-bold leading-tight px-8 whitespace-pre-line"
-                      style={{ color: screenshot.titleColor }}
-                    >
-                      {screenshot.title.split('\\n').map((line, i, arr) => (
-                        <span key={i}>
-                          {line}
-                          {i < arr.length - 1 && <br />}
-                        </span>
-                      ))}
+                  {screenshot.bgPattern && (
+                    <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: getPatternStyle(screenshot.bgPattern, screenshot.titleColor), backgroundSize: '20px 20px' }} />
+                  )}
+                  {!screenshot.bgImage && (
+                    <div className="absolute top-0 left-0 right-0 z-20 pointer-events-none" style={{ height: `${(screenshot.gradientHeight || 400) + 200}px`, background: `linear-gradient(to bottom, ${screenshot.bgColor1} 0%, ${screenshot.bgColor1} ${((screenshot.gradientHeight || 400) / ((screenshot.gradientHeight || 400) + 200)) * 100}%, transparent 100%)` }} />
+                  )}
+                  <div className="relative z-30" style={{ marginTop: `${screenshot.textTopOffset || 0}px`, marginLeft: `${screenshot.textHorizontalOffset || 0}px`, textAlign: screenshot.textAlign }}>
+                    <h2 className="mb-4 leading-tight px-8" style={{ color: screenshot.titleColor, fontFamily: screenshot.fontFamily, fontSize: `${screenshot.titleFontSize}px`, fontWeight: screenshot.titleFontWeight, textShadow: screenshot.textShadow ? '0 4px 20px rgba(0,0,0,0.3)' : 'none' }}>
+                      {screenshot.title.split('\\n').map((line, i, arr) => <span key={i}>{line}{i < arr.length - 1 && <br />}</span>)}
                     </h2>
-                    <p
-                      className="text-6xl leading-relaxed px-8 whitespace-pre-line"
-                      style={{ color: screenshot.subtitleColor }}
-                    >
-                      {screenshot.subtitle.split('\\n').map((line, i, arr) => (
-                        <span key={i}>
-                          {line}
-                          {i < arr.length - 1 && <br />}
-                        </span>
-                      ))}
+                    <p className="leading-relaxed px-8" style={{ color: screenshot.subtitleColor, fontFamily: screenshot.fontFamily, fontSize: `${screenshot.subtitleFontSize}px`, fontWeight: screenshot.subtitleFontWeight, textShadow: screenshot.textShadow ? '0 2px 10px rgba(0,0,0,0.2)' : 'none' }}>
+                      {screenshot.subtitle.split('\\n').map((line, i, arr) => <span key={i}>{line}{i < arr.length - 1 && <br />}</span>)}
                     </p>
                   </div>
-
-                  {/* iPhone Mockup */}
-                  <div
-                    className="relative mx-auto z-10"
-                    style={{
-                      width: '1100px',
-                      top: `${screenshot.phoneTopOffset || 0}px`,
-                    }}
-                  >
-                    <div
-                      className="relative rounded-[55px] shadow-2xl"
-                      style={{
-                        background: 'linear-gradient(145deg, #1a1a1a 0%, #0a0a0a 100%)',
-                        padding: '8px',
-                      }}
-                    >
-                      <div
-                        className="relative rounded-[48px] overflow-hidden"
-                        style={{
-                          boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.1), 0 10px 40px rgba(0,0,0,0.3)',
-                        }}
-                      >
-                        <div className="relative bg-white" style={{ height: '2400px' }}>
-                          {screenshot.image ? (
-                            <img
-                              src={screenshot.image}
-                              alt={screenshot.title}
-                              className="w-full block"
-                              style={{ height: 'auto', minHeight: '100%', objectFit: 'cover' }}
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-neutral-100 to-neutral-200">
-                              <div className="text-center text-neutral-400">
-                                <Upload className="w-24 h-24 mx-auto mb-4 opacity-30" />
-                                <div className="text-2xl">No image uploaded</div>
+                  {screenshot.showDeviceFrame ? (
+                    <div className="relative mx-auto z-10" style={{ width: `${deviceConfig.screenWidth + 16}px`, top: `${screenshot.phoneTopOffset || 0}px` }}>
+                      <div className="relative shadow-2xl" style={{ background: DEVICE_COLORS[screenshot.deviceColor].gradient, padding: '8px', borderRadius: `${deviceConfig.borderRadius}px` }}>
+                        <div className="relative overflow-hidden" style={{ borderRadius: `${deviceConfig.borderRadius - 7}px`, boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.1)' }}>
+                          <div className="relative bg-white" style={{ height: `${deviceConfig.screenHeight}px` }}>
+                            {screenshot.image ? (
+                              <img src={screenshot.image} alt="" className="w-full block" style={{ height: 'auto', minHeight: '100%', objectFit: 'cover' }} />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-neutral-100 to-neutral-200">
+                                <Upload className="w-16 h-16 text-neutral-300" />
                               </div>
-                            </div>
-                          )}
-
-                          {/* Annotations - Interactive Layer */}
-                          {screenshot.annotations.map((annotation) => {
-                            if (!annotation.enabled) return null;
-
-                            const isSelected = selectedAnnotation === annotation.id;
-
-                            return (
-                              <div
-                                key={annotation.id}
-                                className="absolute"
-                                style={{
-                                  top: `${annotation.y}px`,
-                                  left: `${annotation.x}px`,
-                                  width: `${annotation.width}px`,
-                                  height: `${annotation.height}px`,
-                                  transform: `rotate(${annotation.rotation || 0}deg)`,
-                                  transformOrigin: 'center',
-                                  cursor: isSelected ? 'move' : 'pointer',
-                                  pointerEvents: 'auto',
-                                }}
-                                onMouseDown={(e) => handleAnnotationMouseDown(e, annotation.id, 'move')}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedAnnotation(annotation.id);
-                                }}
-                              >
-                                {/* Selection Outline */}
-                                {isSelected && (
-                                  <div
-                                    className="absolute inset-0 border-4 border-dashed pointer-events-none"
-                                    style={{
-                                      borderColor: '#3b82f6',
-                                      margin: '-20px',
-                                      padding: '20px',
-                                    }}
-                                  />
-                                )}
-
-                                {/* Annotation Content */}
-                                {annotation.type === 'arrow' && (
-                                  <svg
-                                    className="w-full h-full"
-                                    viewBox="0 0 900 300"
-                                    style={{ overflow: 'visible' }}
-                                  >
-                                    <path
-                                      d="M 450 250 L 650 250 Q 850 230, 850 50"
-                                      fill="none"
-                                      stroke={annotation.color}
-                                      strokeWidth={annotation.strokeWidth}
-                                      strokeLinecap="round"
-                                    />
-                                    <path
-                                      d="M 850 50 L 800 90"
-                                      fill="none"
-                                      stroke={annotation.color}
-                                      strokeWidth={annotation.strokeWidth}
-                                      strokeLinecap="round"
-                                    />
-                                    <path
-                                      d="M 850 50 L 890 100"
-                                      fill="none"
-                                      stroke={annotation.color}
-                                      strokeWidth={annotation.strokeWidth}
-                                      strokeLinecap="round"
-                                    />
-                                  </svg>
-                                )}
-
-                                {annotation.type === 'line' && (
-                                  <div
-                                    className="w-full h-full"
-                                    style={{
-                                      backgroundColor: annotation.color,
-                                    }}
-                                  />
-                                )}
-
-                                {annotation.type === 'circle' && (
-                                  <div
-                                    className="w-full h-full rounded-full"
-                                    style={{
-                                      border: `${annotation.strokeWidth}px solid ${annotation.color}`,
-                                    }}
-                                  />
-                                )}
-
-                                {annotation.type === 'rectangle' && (
-                                  <div
-                                    className="w-full h-full"
-                                    style={{
-                                      border: `${annotation.strokeWidth}px solid ${annotation.color}`,
-                                      borderRadius: '8px',
-                                    }}
-                                  />
-                                )}
-
-                                {annotation.type === 'highlight' && (
-                                  <div
-                                    className="w-full h-full"
-                                    style={{
-                                      backgroundColor: annotation.color,
-                                      opacity: 0.3,
-                                      borderRadius: '4px',
-                                    }}
-                                  />
-                                )}
-
-                                {/* Interactive Handles - Only show when selected */}
-                                {isSelected && (
-                                  <>
-                                    {/* Resize Handle - Bottom Right Corner */}
-                                    <div
-                                      className="absolute bg-blue-500 rounded-full cursor-nwse-resize"
-                                      style={{
-                                        width: '24px',
-                                        height: '24px',
-                                        bottom: '-12px',
-                                        right: '-12px',
-                                        border: '3px solid white',
-                                      }}
-                                      onMouseDown={(e) => handleAnnotationMouseDown(e, annotation.id, 'resize')}
-                                    />
-
-                                    {/* Rotation Handle - Top Center */}
-                                    <div
-                                      className="absolute bg-green-500 rounded-full cursor-grab"
-                                      style={{
-                                        width: '24px',
-                                        height: '24px',
-                                        top: '-40px',
-                                        left: '50%',
-                                        transform: 'translateX(-50%)',
-                                        border: '3px solid white',
-                                      }}
-                                      onMouseDown={(e) => handleAnnotationMouseDown(e, annotation.id, 'rotate')}
-                                    />
-                                    {/* Connection line to rotation handle */}
-                                    <div
-                                      className="absolute bg-green-500"
-                                      style={{
-                                        width: '2px',
-                                        height: '20px',
-                                        top: '-20px',
-                                        left: '50%',
-                                        transform: 'translateX(-50%)',
-                                      }}
-                                    />
-                                  </>
-                                )}
-                              </div>
-                            );
-                          })}
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="relative mx-auto z-10 overflow-hidden rounded-2xl shadow-2xl" style={{ width: `${deviceConfig.screenWidth}px`, top: `${screenshot.phoneTopOffset || 0}px` }}>
+                      <div className="relative bg-white" style={{ height: `${deviceConfig.screenHeight}px` }}>
+                        {screenshot.image ? (
+                          <img src={screenshot.image} alt="" className="w-full block" style={{ height: 'auto', minHeight: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-neutral-100 to-neutral-200">
+                            <Upload className="w-16 h-16 text-neutral-300" />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
-
-            <button
-              onClick={() => onDownload(screenshotRef.current, screenshot.title)}
-              className="w-full bg-amber-600 hover:bg-amber-500 text-amber-950 py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition-all duration-200 font-medium"
-              style={{ fontFamily: 'system-ui, sans-serif' }}
-            >
-              <Download className="w-4 h-4" />
-              Download
+            <button onClick={() => onDownload(screenshotRef.current, screenshot.title, deviceConfig)} className="w-full bg-slate-100 hover:bg-white text-slate-900 py-2 px-4 rounded-lg flex items-center justify-center gap-2 text-sm font-medium transition-colors" style={{ maxWidth: `${previewWidth}px` }}>
+              <Download className="w-4 h-4" /> Download
             </button>
           </div>
 
-          {/* Editor Panel */}
-          <div className="flex flex-col gap-6">
+          {/* Editor */}
+          <div className="flex-1 min-w-0">
             {/* Image Upload */}
-            <div>
-              <label className="block text-sm mb-2 text-amber-200/80" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                Screenshot Image
-              </label>
-              <div
-                onClick={() => fileInputRef.current?.click()}
-                onDragOver={handleDragOver}
-                onDrop={handleDrop}
-                className="border-2 border-dashed border-amber-600/30 rounded-lg p-6 hover:border-amber-600/50 hover:bg-amber-600/5 transition-all cursor-pointer"
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageUpload}
-                  className="hidden"
-                />
-                <div className="text-center">
-                  <Upload className="w-8 h-8 mx-auto mb-2 text-amber-400/60" />
-                  <div className="text-amber-200/60 text-sm mb-1">
-                    {screenshot.image ? 'Change image' : 'Click or drag image here'}
-                  </div>
-                  <div className="text-amber-200/40 text-xs">iPhone 15 Pro Max: 1290 × 2796px</div>
-                </div>
+            <div onClick={() => fileInputRef.current?.click()} className="border border-dashed border-slate-700 rounded-lg p-3 mb-3 hover:border-slate-600 hover:bg-slate-800/50 cursor-pointer transition-colors">
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+              <div className="flex items-center gap-2 text-slate-400 text-sm">
+                <Upload className="w-4 h-4" />
+                {screenshot.image ? 'Change screenshot image' : 'Upload screenshot image'}
               </div>
             </div>
 
-            {/* Text Fields */}
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm mb-2 text-amber-200/80" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                  Title
-                </label>
-                <textarea
-                  value={screenshot.title}
-                  onChange={(e) => onUpdate(screenshot.id, { title: e.target.value })}
-                  rows={2}
-                  className="w-full px-4 py-3 bg-neutral-950 border border-amber-600/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-600/40 text-amber-50 placeholder-amber-200/20 resize-none"
-                  style={{ fontFamily: 'system-ui, sans-serif' }}
-                  placeholder="Feature title"
-                />
-                <div className="text-xs text-amber-200/40 mt-1">Use \n for line breaks</div>
-              </div>
-              <div>
-                <label className="block text-sm mb-2 text-amber-200/80" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                  Subtitle
-                </label>
-                <textarea
-                  value={screenshot.subtitle}
-                  onChange={(e) => onUpdate(screenshot.id, { subtitle: e.target.value })}
-                  rows={2}
-                  className="w-full px-4 py-3 bg-neutral-950 border border-amber-600/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-600/40 text-amber-50 placeholder-amber-200/20 resize-none"
-                  style={{ fontFamily: 'system-ui, sans-serif' }}
-                  placeholder="Feature description"
-                />
-              </div>
+            {/* Tabs */}
+            <div className="flex gap-1 mb-3 overflow-x-auto">
+              {(['text', 'style', 'layout', 'device'] as const).map(tab => (
+                <button key={tab} onClick={() => setActiveTab(tab)} className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${activeTab === tab ? 'bg-slate-100 text-slate-900' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}>
+                  {tab === 'text' && <Type className="w-3 h-3 inline mr-1" />}
+                  {tab === 'style' && <Palette className="w-3 h-3 inline mr-1" />}
+                  {tab === 'layout' && <Settings2 className="w-3 h-3 inline mr-1" />}
+                  {tab === 'device' && <Smartphone className="w-3 h-3 inline mr-1" />}
+                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                </button>
+              ))}
             </div>
 
-            {/* Colors */}
-            <div>
-              <button
-                onClick={() => setShowColors(!showColors)}
-                className="flex items-center gap-2 text-amber-200/70 hover:text-amber-200 transition-colors mb-3"
-                style={{ fontFamily: 'system-ui, sans-serif' }}
-              >
-                <Paintbrush className="w-4 h-4" />
-                <span className="text-sm">Colors & Theme</span>
-                <span className="text-xs">{showColors ? '−' : '+'}</span>
-              </button>
-
-              {showColors && (
-                <div className="space-y-4 pl-6 border-l-2 border-amber-600/20">
+            {/* Tab Content */}
+            <div className="space-y-3">
+              {activeTab === 'text' && (
+                <>
                   <div>
-                    <label className="block text-sm mb-2 text-amber-200/80" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                      Title Color
-                    </label>
-                    <div className="flex gap-2">
-                      <input
-                        type="color"
-                        value={screenshot.titleColor}
-                        onChange={(e) => onUpdate(screenshot.id, { titleColor: e.target.value })}
-                        className="w-12 h-10 rounded cursor-pointer bg-transparent"
-                      />
-                      <input
-                        type="text"
-                        value={screenshot.titleColor}
-                        onChange={(e) => onUpdate(screenshot.id, { titleColor: e.target.value })}
-                        className="flex-1 px-3 py-2 bg-neutral-950 border border-amber-600/20 rounded-lg text-amber-50 text-sm"
-                        style={{ fontFamily: 'monospace' }}
-                      />
-                    </div>
+                    <label className="block text-xs text-slate-400 mb-1">Title</label>
+                    <textarea value={screenshot.title} onChange={(e) => onUpdate(screenshot.id, { title: e.target.value })} rows={2} className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-slate-100 text-sm resize-none focus:border-slate-500 focus:outline-none" />
                   </div>
                   <div>
-                    <label className="block text-sm mb-2 text-amber-200/80" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                      Subtitle Color
-                    </label>
-                    <div className="flex gap-2">
-                      <input
-                        type="color"
-                        value={screenshot.subtitleColor}
-                        onChange={(e) => onUpdate(screenshot.id, { subtitleColor: e.target.value })}
-                        className="w-12 h-10 rounded cursor-pointer bg-transparent"
-                      />
-                      <input
-                        type="text"
-                        value={screenshot.subtitleColor}
-                        onChange={(e) => onUpdate(screenshot.id, { subtitleColor: e.target.value })}
-                        className="flex-1 px-3 py-2 bg-neutral-950 border border-amber-600/20 rounded-lg text-amber-50 text-sm"
-                        style={{ fontFamily: 'monospace' }}
-                      />
-                    </div>
+                    <label className="block text-xs text-slate-400 mb-1">Subtitle</label>
+                    <textarea value={screenshot.subtitle} onChange={(e) => onUpdate(screenshot.id, { subtitle: e.target.value })} rows={2} className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-slate-100 text-sm resize-none focus:border-slate-500 focus:outline-none" />
                   </div>
-                  <div>
-                    <label className="block text-sm mb-2 text-amber-200/80" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                      Background Gradient
-                    </label>
-                    <div className="space-y-2">
-                      <div className="flex gap-2 items-center">
-                        <input
-                          type="color"
-                          value={screenshot.bgColor1}
-                          onChange={(e) => onUpdate(screenshot.id, { bgColor1: e.target.value })}
-                          className="w-12 h-10 rounded cursor-pointer bg-transparent"
-                        />
-                        <span className="text-xs text-amber-200/60">Start</span>
-                      </div>
-                      <div className="flex gap-2 items-center">
-                        <input
-                          type="color"
-                          value={screenshot.bgColor2}
-                          onChange={(e) => onUpdate(screenshot.id, { bgColor2: e.target.value })}
-                          className="w-12 h-10 rounded cursor-pointer bg-transparent"
-                        />
-                        <span className="text-xs text-amber-200/60">Middle</span>
-                      </div>
-                      <div className="flex gap-2 items-center">
-                        <input
-                          type="color"
-                          value={screenshot.bgColor3}
-                          onChange={(e) => onUpdate(screenshot.id, { bgColor3: e.target.value })}
-                          className="w-12 h-10 rounded cursor-pointer bg-transparent"
-                        />
-                        <span className="text-xs text-amber-200/60">End</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Font</label>
+                      <select value={screenshot.fontFamily} onChange={(e) => onUpdate(screenshot.id, { fontFamily: e.target.value })} className="w-full px-2 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 text-xs">
+                        {FONT_FAMILIES.map(f => <option key={f.value} value={f.value}>{f.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Align</label>
+                      <div className="flex gap-1">
+                        {(['left', 'center', 'right'] as const).map(a => (
+                          <button key={a} onClick={() => onUpdate(screenshot.id, { textAlign: a })} className={`flex-1 py-1.5 rounded text-xs transition-colors ${screenshot.textAlign === a ? 'bg-slate-100 text-slate-900' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}>{a[0].toUpperCase()}</button>
+                        ))}
                       </div>
                     </div>
                   </div>
-                </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Title Size: {screenshot.titleFontSize}</label>
+                      <input type="range" min="48" max="140" value={screenshot.titleFontSize} onChange={(e) => onUpdate(screenshot.id, { titleFontSize: parseInt(e.target.value) })} className="w-full accent-slate-400" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Sub Size: {screenshot.subtitleFontSize}</label>
+                      <input type="range" min="24" max="80" value={screenshot.subtitleFontSize} onChange={(e) => onUpdate(screenshot.id, { subtitleFontSize: parseInt(e.target.value) })} className="w-full accent-slate-400" />
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={screenshot.textShadow} onChange={(e) => onUpdate(screenshot.id, { textShadow: e.target.checked })} className="accent-slate-400" />
+                    <span className="text-xs text-slate-300">Text shadow</span>
+                  </label>
+                </>
               )}
-            </div>
 
-            {/* Annotations */}
-            <div>
-              <button
-                onClick={() => setShowAnnotations(!showAnnotations)}
-                className="flex items-center gap-2 text-amber-200/70 hover:text-amber-200 transition-colors mb-3"
-                style={{ fontFamily: 'system-ui, sans-serif' }}
-              >
-                <ArrowUpRight className="w-4 h-4" />
-                <span className="text-sm">Annotations ({screenshot.annotations.length})</span>
-                <span className="text-xs">{showAnnotations ? '−' : '+'}</span>
-              </button>
-
-              {showAnnotations && (
-                <div className="space-y-4 pl-6 border-l-2 border-amber-600/20">
-                  {/* Instructions */}
-                  <div className="bg-blue-500/5 border border-blue-500/20 rounded-lg p-3">
-                    <div className="text-xs text-blue-300/90 leading-relaxed">
-                      <strong>How to use:</strong> Click an annotation to select it, then drag to move.
-                      Use the <span className="text-blue-400">blue handle</span> to resize and the <span className="text-green-400">green handle</span> to rotate.
-                      Press <kbd className="px-1 py-0.5 bg-blue-500/20 rounded text-[10px]">Delete</kbd> to remove.
+              {activeTab === 'style' && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-2">Themes</label>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {PRESET_THEMES.map(t => (
+                        <button key={t.name} onClick={() => onUpdate(screenshot.id, { bgColor1: t.bgColor1, bgColor2: t.bgColor2, bgColor3: t.bgColor3, titleColor: t.titleColor, subtitleColor: t.subtitleColor })} className="p-1 rounded hover:ring-2 hover:ring-slate-500 transition-all" title={t.name}>
+                          <div className="w-full h-6 rounded" style={{ background: `linear-gradient(135deg, ${t.bgColor1} 0%, ${t.bgColor3} 100%)` }} />
+                        </button>
+                      ))}
                     </div>
                   </div>
-
-                  {/* Add Annotation Buttons */}
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => addAnnotation('arrow')}
-                      className="px-3 py-1.5 bg-amber-600/10 hover:bg-amber-600/20 border border-amber-600/30 text-amber-200 rounded text-xs flex items-center gap-1.5"
-                    >
-                      <ArrowUpRight className="w-3.5 h-3.5" />
-                      Arrow
-                    </button>
-                    <button
-                      onClick={() => addAnnotation('line')}
-                      className="px-3 py-1.5 bg-amber-600/10 hover:bg-amber-600/20 border border-amber-600/30 text-amber-200 rounded text-xs flex items-center gap-1.5"
-                    >
-                      <Minus className="w-3.5 h-3.5" />
-                      Line
-                    </button>
-                    <button
-                      onClick={() => addAnnotation('circle')}
-                      className="px-3 py-1.5 bg-amber-600/10 hover:bg-amber-600/20 border border-amber-600/30 text-amber-200 rounded text-xs flex items-center gap-1.5"
-                    >
-                      <Circle className="w-3.5 h-3.5" />
-                      Circle
-                    </button>
-                    <button
-                      onClick={() => addAnnotation('rectangle')}
-                      className="px-3 py-1.5 bg-amber-600/10 hover:bg-amber-600/20 border border-amber-600/30 text-amber-200 rounded text-xs flex items-center gap-1.5"
-                    >
-                      <Square className="w-3.5 h-3.5" />
-                      Box
-                    </button>
-                    <button
-                      onClick={() => addAnnotation('highlight')}
-                      className="px-3 py-1.5 bg-amber-600/10 hover:bg-amber-600/20 border border-amber-600/30 text-amber-200 rounded text-xs flex items-center gap-1.5"
-                    >
-                      <Paintbrush className="w-3.5 h-3.5" />
-                      Highlight
-                    </button>
-                  </div>
-
-                  {/* Annotation List */}
-                  <div className="space-y-2 max-h-96 overflow-y-auto">
-                    {screenshot.annotations.length === 0 && (
-                      <div className="text-center py-6 text-amber-200/40 text-xs">
-                        Add annotations to highlight features
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Title</label>
+                      <div className="flex gap-1">
+                        <input type="color" value={screenshot.titleColor} onChange={(e) => onUpdate(screenshot.id, { titleColor: e.target.value })} className="w-8 h-7 rounded cursor-pointer bg-transparent" />
+                        <input type="text" value={screenshot.titleColor} onChange={(e) => onUpdate(screenshot.id, { titleColor: e.target.value })} className="flex-1 px-2 py-1 bg-slate-950 border border-slate-700 rounded text-slate-100 text-xs font-mono" />
                       </div>
-                    )}
-                    {screenshot.annotations.map((annotation, idx) => {
-                      const isSelected = selectedAnnotation === annotation.id;
-                      return (
-                        <div
-                          key={annotation.id}
-                          className={`bg-neutral-950/50 border rounded-lg p-3 cursor-pointer transition-all ${
-                            isSelected
-                              ? 'border-blue-500/50 bg-blue-500/5'
-                              : 'border-amber-600/10 hover:border-amber-600/30'
-                          }`}
-                          onClick={() => setSelectedAnnotation(annotation.id)}
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-2 flex-1">
-                              <input
-                                type="checkbox"
-                                checked={annotation.enabled}
-                                onChange={(e) => {
-                                  e.stopPropagation();
-                                  updateAnnotation(annotation.id, { enabled: e.target.checked });
-                                }}
-                                className="w-4 h-4 accent-amber-600"
-                              />
-                              <input
-                                type="color"
-                                value={annotation.color}
-                                onChange={(e) => {
-                                  e.stopPropagation();
-                                  updateAnnotation(annotation.id, { color: e.target.value });
-                                }}
-                                className="w-8 h-8 rounded cursor-pointer bg-transparent border-0"
-                                onClick={(e) => e.stopPropagation()}
-                              />
-                              <div className="flex-1">
-                                <div className="text-xs text-amber-200/80 capitalize font-medium">
-                                  {annotation.type} {idx + 1}
-                                </div>
-                                {isSelected && (
-                                  <div className="text-[10px] text-amber-200/50 mt-0.5">
-                                    Click and drag to move · Blue handle to resize · Green handle to rotate
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removeAnnotation(annotation.id);
-                              }}
-                              className="p-1.5 hover:bg-red-500/10 text-red-400/70 hover:text-red-400 rounded"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-
-                          {/* Quick Stroke Width Control - Only for non-highlight types */}
-                          {isSelected && annotation.enabled && annotation.type !== 'highlight' && (
-                            <div className="mt-3 pt-3 border-t border-amber-600/10">
-                              <label className="block text-xs mb-1.5 text-amber-200/60">
-                                Stroke: {annotation.strokeWidth}px
-                              </label>
-                              <input
-                                type="range"
-                                min="2"
-                                max="32"
-                                value={annotation.strokeWidth}
-                                onChange={(e) => {
-                                  e.stopPropagation();
-                                  updateAnnotation(annotation.id, { strokeWidth: parseInt(e.target.value) });
-                                }}
-                                onClick={(e) => e.stopPropagation()}
-                                className="w-full accent-amber-600"
-                              />
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Subtitle</label>
+                      <div className="flex gap-1">
+                        <input type="color" value={screenshot.subtitleColor} onChange={(e) => onUpdate(screenshot.id, { subtitleColor: e.target.value })} className="w-8 h-7 rounded cursor-pointer bg-transparent" />
+                        <input type="text" value={screenshot.subtitleColor} onChange={(e) => onUpdate(screenshot.id, { subtitleColor: e.target.value })} className="flex-1 px-2 py-1 bg-slate-950 border border-slate-700 rounded text-slate-100 text-xs font-mono" />
+                      </div>
+                    </div>
                   </div>
-                </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Background</label>
+                    <div className="flex gap-1 items-center">
+                      <input type="color" value={screenshot.bgColor1} onChange={(e) => onUpdate(screenshot.id, { bgColor1: e.target.value })} className="w-8 h-7 rounded cursor-pointer bg-transparent" />
+                      <input type="color" value={screenshot.bgColor2} onChange={(e) => onUpdate(screenshot.id, { bgColor2: e.target.value })} className="w-8 h-7 rounded cursor-pointer bg-transparent" />
+                      <input type="color" value={screenshot.bgColor3} onChange={(e) => onUpdate(screenshot.id, { bgColor3: e.target.value })} className="w-8 h-7 rounded cursor-pointer bg-transparent" />
+                      <div className="flex-1 h-7 rounded" style={{ background: `linear-gradient(135deg, ${screenshot.bgColor1} 0%, ${screenshot.bgColor2} 50%, ${screenshot.bgColor3} 100%)` }} />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Pattern</label>
+                    <select value={screenshot.bgPattern || ''} onChange={(e) => onUpdate(screenshot.id, { bgPattern: e.target.value })} className="w-full px-2 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 text-xs">
+                      <option value="">None</option>
+                      <option value="dots">Dots</option>
+                      <option value="grid">Grid</option>
+                    </select>
+                  </div>
+                </>
               )}
-            </div>
 
-            {/* Advanced Settings */}
-            <div>
-              <button
-                onClick={() => setShowAdvanced(!showAdvanced)}
-                className="flex items-center gap-2 text-amber-200/70 hover:text-amber-200 transition-colors mb-3"
-                style={{ fontFamily: 'system-ui, sans-serif' }}
-              >
-                <Settings2 className="w-4 h-4" />
-                <span className="text-sm">Layout Settings</span>
-                <span className="text-xs">{showAdvanced ? '−' : '+'}</span>
-              </button>
+              {activeTab === 'layout' && (
+                <>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Text Y: {screenshot.textTopOffset || 0}</label>
+                    <input type="range" min="-200" max="1200" value={screenshot.textTopOffset || 0} onChange={(e) => onUpdate(screenshot.id, { textTopOffset: parseInt(e.target.value) })} className="w-full accent-slate-400" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Text X: {screenshot.textHorizontalOffset || 0}</label>
+                    <input type="range" min="-400" max="400" value={screenshot.textHorizontalOffset || 0} onChange={(e) => onUpdate(screenshot.id, { textHorizontalOffset: parseInt(e.target.value) })} className="w-full accent-slate-400" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Device Y: {screenshot.phoneTopOffset || 0}</label>
+                    <input type="range" min="-600" max="200" value={screenshot.phoneTopOffset || 0} onChange={(e) => onUpdate(screenshot.id, { phoneTopOffset: parseInt(e.target.value) })} className="w-full accent-slate-400" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Gradient: {screenshot.gradientHeight || 400}</label>
+                    <input type="range" min="200" max="800" value={screenshot.gradientHeight || 400} onChange={(e) => onUpdate(screenshot.id, { gradientHeight: parseInt(e.target.value) })} className="w-full accent-slate-400" />
+                  </div>
+                </>
+              )}
 
-              {showAdvanced && (
-                <div className="space-y-4 pl-6 border-l-2 border-amber-600/20">
+              {activeTab === 'device' && (
+                <>
                   <div>
-                    <label className="block text-sm mb-2 text-amber-200/80" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                      Text Vertical Offset: {screenshot.textTopOffset || 0}px
-                    </label>
-                    <input
-                      type="range"
-                      min="-200"
-                      max="1500"
-                      value={screenshot.textTopOffset || 0}
-                      onChange={(e) => onUpdate(screenshot.id, { textTopOffset: parseInt(e.target.value) })}
-                      className="w-full accent-amber-600"
-                    />
+                    <label className="block text-xs text-slate-400 mb-1">Device</label>
+                    <select value={screenshot.deviceType} onChange={(e) => onUpdate(screenshot.id, { deviceType: e.target.value as DeviceType })} className="w-full px-2 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-100 text-xs">
+                      {Object.entries(DEVICE_CONFIGS).map(([k, v]) => <option key={k} value={k}>{v.name}</option>)}
+                    </select>
                   </div>
                   <div>
-                    <label className="block text-sm mb-2 text-amber-200/80" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                      Gradient Height: {screenshot.gradientHeight || 400}px
-                    </label>
-                    <input
-                      type="range"
-                      min="200"
-                      max="800"
-                      value={screenshot.gradientHeight || 400}
-                      onChange={(e) => onUpdate(screenshot.id, { gradientHeight: parseInt(e.target.value) })}
-                      className="w-full accent-amber-600"
-                    />
+                    <label className="block text-xs text-slate-400 mb-1">Color</label>
+                    <div className="flex gap-1.5 flex-wrap">
+                      {Object.entries(DEVICE_COLORS).map(([k, v]) => (
+                        <button key={k} onClick={() => onUpdate(screenshot.id, { deviceColor: k as DeviceColor })} className={`w-7 h-7 rounded-full border-2 transition-transform ${screenshot.deviceColor === k ? 'border-slate-300 scale-110' : 'border-transparent hover:scale-105'}`} style={{ background: v.gradient }} title={v.name} />
+                      ))}
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-sm mb-2 text-amber-200/80" style={{ fontFamily: 'system-ui, sans-serif' }}>
-                      Phone Vertical Offset: {screenshot.phoneTopOffset || 0}px
-                    </label>
-                    <input
-                      type="range"
-                      min="-600"
-                      max="200"
-                      value={screenshot.phoneTopOffset || 0}
-                      onChange={(e) => onUpdate(screenshot.id, { phoneTopOffset: parseInt(e.target.value) })}
-                      className="w-full accent-amber-600"
-                    />
-                  </div>
-                </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={screenshot.showDeviceFrame} onChange={(e) => onUpdate(screenshot.id, { showDeviceFrame: e.target.checked })} className="accent-slate-400" />
+                    <span className="text-xs text-slate-300">Show device frame</span>
+                  </label>
+                </>
               )}
             </div>
           </div>
